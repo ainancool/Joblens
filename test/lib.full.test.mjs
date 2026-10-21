@@ -221,3 +221,26 @@ console.log("scores:", sc);
 assert.ok(sc["jooble:11"] >= 60, "Bosch: same work, different product words -> clearly similar");
 assert.ok(sc.fw > (sc.net ?? 0), "skills decide between two 'security engineer' roles");
 console.log("role-score tests passed");
+
+// ---------- JD year range used for salary statistics ----------
+import { yearsWindow, yearsGap } from "../lib.js";
+assert.deepEqual(yearsWindow({ min: 3, max: 5 }), { lo: 2, hi: 6 });
+assert.deepEqual(yearsWindow({ min: 5, max: null }), { lo: 3, hi: 7 });
+assert.equal(yearsWindow(null), null);
+assert.equal(yearsGap(4, { min: 3, max: 5 }), 0);
+assert.equal(yearsGap(8, { min: 3, max: 5 }), 3);
+const rawR = (uuid, yrs, lo, hi) => ({ uuid, title: "Security Engineer", postedCompany: { name: "CO" + uuid },
+  minimumYearsExperience: yrs, salary: { minimum: lo, maximum: hi, type: { salaryType: "Monthly" } }, metadata: {} });
+const poolRange = [
+  ...[2, 3, 4, 5, 6, 6].map((y, i) => rawR("in" + i, y, 7000 + y * 500, 10000 + y * 500)),   // inside 2–6
+  ...[1, 1, 8, 10].map((y, i) => rawR("out" + i, y, 3000 + y * 900, 5000 + y * 1200)),        // outside
+  rawR("na", null, 20000, 25000),                                                            // no requirement stated
+].map(mapMcfJob);
+const rR = analyze({ title: "Security Engineer", company: "X", years: { min: 3, max: 5, text: "3-5 years" } }, poolRange);
+assert.equal(rR.market.years, "applied");
+assert.equal(rR.market.n, 6, "only 2–6 year postings; 1, 8, 10 years and 'not stated' excluded");
+assert.ok(!rR.market.examples.some((j) => j.id === "na"));
+// upper bound matters now: same JD written as "3+ years" would include the 1-year postings' neighbours differently
+const rP = analyze({ title: "Security Engineer", company: "X", years: { min: 3, max: null } }, poolRange);
+assert.equal(rP.market.n, 7 - 1, "3+ years -> 1–5 window: 1,1,2,3,4,5");
+console.log("year-range tests passed");

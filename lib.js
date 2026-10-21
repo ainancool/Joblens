@@ -311,7 +311,7 @@ export function roleSimilarity(a, b) {
 
 export const RELATED_WEIGHTS = { title: 0.3, skills: 0.5, years: 0.2 };
 
-export function relatedJobs(target, all, { level, years, jdSkills, ref, excludeIds }) {
+export function relatedJobs(target, all, { level, years, yearsRange, jdSkills, ref, excludeIds }) {
   const want = new Set(jdSkills);
   const seen = new Set();
   const scored = [];
@@ -326,8 +326,8 @@ export function relatedJobs(target, all, { level, years, jdSkills, ref, excludeI
     if (seen.has(dupKey)) continue; // reposts of the same ad
     seen.add(dupKey);
     const skillScore = want.size ? matched.length / Math.min(want.size, 6) : 0.5;
-    const yearsScore =
-      years == null || j.minYears == null ? 0.5 : Math.max(0, 1 - Math.abs(j.minYears - years) / 4);
+    const gap = yearsGap(j.minYears, yearsRange || (years != null ? { min: years } : null));
+    const yearsScore = gap == null ? 0.5 : Math.max(0, 1 - gap / 4);
     const W = RELATED_WEIGHTS;
     const score = W.title * roleSim + W.skills * Math.min(1, skillScore) + W.years * yearsScore;
     if (score < 0.35) continue;
@@ -340,6 +340,24 @@ export function relatedJobs(target, all, { level, years, jdSkills, ref, excludeI
 const byDateDesc = (a, b) => (b.postedAt || "").localeCompare(a.postedAt || "");
 const MIN_SAMPLE = 5;
 const YEARS_TOLERANCE = 2;
+
+/**
+ * Which MCF "minimum years" values count as the same seniority as the JD.
+ * A range in the JD ("3-5 years") uses the whole range, widened by 1 year each side (2-6).
+ * A single value ("5+ years") keeps ±2 (3-7).
+ */
+export function yearsWindow(y) {
+  if (!y || y.min == null) return null;
+  if (y.max != null && y.max > y.min) return { lo: Math.max(0, y.min - 1), hi: y.max + 1 };
+  return { lo: Math.max(0, y.min - YEARS_TOLERANCE), hi: y.min + YEARS_TOLERANCE };
+}
+
+// Distance (in years) from an MCF requirement to the JD's own range; 0 when inside it.
+export function yearsGap(minYears, y) {
+  if (!y || y.min == null || minYears == null) return null;
+  const hi = y.max != null && y.max > y.min ? y.max : y.min;
+  return minYears < y.min ? y.min - minYears : minYears > hi ? minYears - hi : 0;
+}
 
 /**
  * Given the LinkedIn job and a pool of MCF jobs, produce the comparison.
@@ -371,13 +389,17 @@ export function analyze(target, pool, extraRelated = []) {
     all.push({ ...j, sim: titleSimilarity(t, p), level: jl, levelDetected: p.detected });
   }
 
-  const yearsClose = (j) => years == null || j.minYears == null || Math.abs(j.minYears - years) <= YEARS_TOLERANCE;
+  const win = yearsWindow(target.years);
+  // For "same job" matching a missing requirement isn't held against a posting…
+  const yearsClose = (j) => !win || j.minYears == null || (j.minYears >= win.lo && j.minYears <= win.hi);
+  // …but salary statistics only count postings whose stated requirement fits the JD.
+  const yearsFit = (j) => !win || (j.minYears != null && j.minYears >= win.lo && j.minYears <= win.hi);
   const levelClose = (j) => level == null || j.level == null || Math.abs(j.level - level) <= 1;
 
   // Apply the years filter, but fall back if it leaves too few data points.
   const withYears = (list) => {
     if (years == null) return { list, years: "none" };
-    const f = list.filter(yearsClose);
+    const f = list.filter(yearsFit);
     if (f.length >= MIN_SAMPLE || f.length === list.length) return { list: f, years: "applied" };
     return { list, years: "relaxed" };
   };
@@ -396,7 +418,7 @@ export function analyze(target, pool, extraRelated = []) {
 
   const byRelevance = (a, b) =>
     b.sim - a.sim ||
-    (years != null ? Math.abs((a.minYears ?? 99) - years) - Math.abs((b.minYears ?? 99) - years) : 0) ||
+    (win ? (yearsGap(a.minYears, target.years) ?? 99) - (yearsGap(b.minYears, target.years) ?? 99) : 0) ||
     b.salary.max - a.salary.max;
   const companyWithSalary = withSalary(ofCompany);
   const marketStats = summarize(mk.list);
@@ -416,7 +438,7 @@ export function analyze(target, pool, extraRelated = []) {
     return { ...j, sim: titleSimilarity(t, p), level: p.detected ? p.level : levelFromYears(j.minYears), levelDetected: p.detected };
   });
   const related = relatedJobs(target, [...all, ...extra], {
-    level: relatedLevel, years, jdSkills, ref,
+    level: relatedLevel, years, yearsRange: target.years || null, jdSkills, ref,
     excludeIds: new Set([...identical, ...likely].map((j) => j.id)),
   });
   return {

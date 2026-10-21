@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SG Job Lens",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "description": "On LinkedIn job pages: Singapore salary ranges from MyCareersFuture, similar jobs, company review links, and one-click AI prompts.",
   "permissions": [
     "storage",
