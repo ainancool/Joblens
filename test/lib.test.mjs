@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {toMonthly,summarize,percentile,mapMcfJob,parseExperience,compareSalary,analyze,sameTitle} from '../lib.js';
+test('annual salary converts to monthly SGD',()=>assert.deepEqual(toMonthly({minimum:120000,maximum:144000,salaryType:'Annual'}),{min:10000,max:12000}));
+test('hourly salary is not a comparable monthly range',()=>assert.equal(toMonthly({minimum:10,maximum:20,salaryType:'Hourly'}),null));
+test('reversed public range is normalized',()=>assert.deepEqual(toMonthly({minimum:11000,maximum:7000,salaryType:'Monthly'}),{min:7000,max:11000}));
+test('single posting statistics use the midpoint',()=>{const s=summarize([{salary:{min:7000,max:11000}}]);assert.equal(s.p50,9000);assert.equal(s.n,1);assert.equal(s.confidence,'low')});
+test('percentiles interpolate sorted salary midpoints',()=>assert.equal(percentile([1000,2000,3000],0.25),1500));
+test('undisclosed salary stays null, not zero',()=>assert.equal(mapMcfJob({uuid:'test',title:'Data Engineer',hiringCompany:{name:'Demo'},salary:{minimum:7000,maximum:11000},metadata:{isHideSalary:true}}).salary,null));
+test('JD experience is extracted without inventing an upper bound',()=>{const y=parseExperience('At least 5+ years of experience with data platforms');assert.equal(y.min,5);assert.equal(y.max,null)});
+test('higher salary comparison is distinct from an overlapping range',()=>{assert.equal(compareSalary({min:12000,max:14000},{min:7000,max:11000}),'higher');assert.equal(compareSalary({min:10000,max:12000},{min:7000,max:11000}),'similar')});
+test('same-title match preserves seniority normalization',()=>assert.equal(sameTitle('Sr. Data Engineer','Senior Data Engineer'),true));
+test('empty market produces missing salary, not a fabricated estimate',()=>{const d=analyze({id:'demo',title:'Data Engineer',company:'Demo',description:'',years:null},[]);assert.equal(d.market.n,0);assert.equal(d.market.p50,null);assert.equal(d.related.ref,null);assert.equal(d.identical.length,0)});
