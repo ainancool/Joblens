@@ -276,10 +276,15 @@ export function levelFromYears(y) {
   return 4;
 }
 
+// Compare range midpoints: within ±15% of the baseline counts as similar.
+export const SIMILAR_BAND = 0.15;
 export function compareSalary(s, ref) {
   if (!s || !ref) return null;
-  if (s.max < ref.min) return "lower";
-  if (s.min > ref.max) return "higher";
+  const mid = (s.min + s.max) / 2, base = (ref.min + ref.max) / 2;
+  if (!base) return null;
+  const diff = (mid - base) / base;
+  if (diff > SIMILAR_BAND) return "higher";
+  if (diff < -SIMILAR_BAND) return "lower";
   return "similar";
 }
 
@@ -335,6 +340,59 @@ export function relatedJobs(target, all, { level, years, yearsRange, jdSkills, r
   }
   scored.sort((a, b) => b.score - a.score || byDateDesc(a, b));
   return scored.slice(0, 40);
+}
+
+// ---------- "this job's salary" from public information ----------
+// A pay statement written in the JD itself ("Salary: S$8,000 - 10,000 per month").
+const PAY_WORDS = /(salary|remuneration|compensation|pay range|base pay|monthly pay|薪资|月薪|薪酬|工资)/i;
+export function findJdSalary(text) {
+  if (!text) return null;
+  for (const line of String(text).split(/\n|(?<=[.;。；])\s+/)) {
+    if (line.length > 220 || !PAY_WORDS.test(line)) continue;
+    if (!/(s\$|sgd|\$|新币)\s?\d|\d[\d,.]*\s?k?\s?(sgd|新币)/i.test(line)) continue;
+    const salary = parseSalaryText(line);
+    if (salary) return { salary, text: line.trim() };
+  }
+  return null;
+}
+
+// Weighted percentile over [value, weight] pairs (integer weights): a posting with weight 2
+// counts twice, then the usual linearly-interpolated percentile.
+function wPercentile(pairs, p) {
+  const vals = pairs.flatMap(([v, w]) => Array(Math.max(0, Math.round(w))).fill(v)).sort((a, b) => a - b);
+  return percentile(vals, p);
+}
+const round100 = (n) => Math.round(n / 100) * 100;
+
+/**
+ * Best public answer to "what does this job pay", in order of trust:
+ *  1. pay shown on the LinkedIn posting  2. pay written in the JD
+ *  3. the same posting on MCF            4. estimate from same-company (×2) and market (×1)
+ *     postings that already passed the title / level / JD-years filters.
+ */
+export function estimateSalary({ pageSalaryText, description, identical, likely, companyList, marketList }) {
+  const page = parseSalaryText(pageSalaryText);
+  if (page) return { source: "page", range: page, text: pageSalaryText, confidence: "high" };
+  const jd = findJdSalary(description);
+  if (jd) return { source: "jd", range: jd.salary, text: jd.text, confidence: "high" };
+  const same = identical.find((j) => j.salary);
+  if (same) return { source: "mcf-same", range: same.salary, job: same, confidence: "high" };
+  const maybe = likely.find((j) => j.salary);
+  if (maybe) return { source: "mcf-likely", range: maybe.salary, job: maybe, confidence: "medium" };
+
+  const w = new Map();
+  for (const j of marketList) w.set(j.id, [(j.salary.min + j.salary.max) / 2, 1]);
+  for (const j of companyList) w.set(j.id, [(j.salary.min + j.salary.max) / 2, 2]);
+  const pairs = [...w.values()];
+  const companyN = companyList.length, marketN = marketList.length;
+  if (pairs.length < 3) return { source: "none", companyN, marketN, hidden: identical.some((j) => !j.salary) };
+  const lo = round100(wPercentile(pairs, 0.25)), hi = round100(wPercentile(pairs, 0.75));
+  const confidence = companyN >= 3 || pairs.length >= 15 ? "high" : pairs.length >= 5 ? "medium" : "low";
+  return {
+    source: "estimate", range: { min: Math.min(lo, hi), max: Math.max(lo, hi) },
+    mid: round100(wPercentile(pairs, 0.5)), companyN, marketN, confidence,
+    hidden: identical.some((j) => !j.salary),
+  };
 }
 
 const byDateDesc = (a, b) => (b.postedAt || "").localeCompare(a.postedAt || "");
@@ -413,21 +471,22 @@ export function analyze(target, pool, extraRelated = []) {
         .sort((a, b) => b.sim - a.sim || byDateDesc(a, b));
 
   const withSalary = (xs) => xs.filter((j) => j.salary);
-  const co = withYears(withSalary(ofCompany).filter((j) => j.sim >= 0.34));
-  const mk = withYears(withSalary(all).filter((j) => j.sim >= 0.5 && levelClose(j)));
+  // Compare the role part of titles ("Security Engineer"), not team/product words after a comma.
+  const role = (j) => roleSimilarity(target.title, j.title);
+  const co = withYears(withSalary(ofCompany).filter((j) => role(j) >= 0.4));
+  const mk = withYears(withSalary(all).filter((j) => role(j) >= 0.6 && levelClose(j)));
 
   const byRelevance = (a, b) =>
     b.sim - a.sim ||
     (win ? (yearsGap(a.minYears, target.years) ?? 99) - (yearsGap(b.minYears, target.years) ?? 99) : 0) ||
     b.salary.max - a.salary.max;
   const companyWithSalary = withSalary(ofCompany);
-  const marketStats = summarize(mk.list);
-  const hit = identical.find((j) => j.salary) || likely.find((j) => j.salary);
-  const ref = hit
-    ? { min: hit.salary.min, max: hit.salary.max, source: "same" }
-    : marketStats.n >= 3
-      ? { min: marketStats.p25, max: marketStats.p75, source: "market" }
-      : null;
+  // One baseline everywhere: the "本职位薪资区间" shown at the top of the salary tab.
+  const estimate = estimateSalary({
+    pageSalaryText: target.pageSalary || "", description: target.description || "",
+    identical, likely, companyList: co.list, marketList: mk.list,
+  });
+  const ref = estimate.range ? { min: estimate.range.min, max: estimate.range.max, source: estimate.source } : null;
   const jdSkills = findSkills(target.description || "");
   // Salary uses the title's level; related jobs use what the JD actually asks for (years),
   // falling back to the title only when the JD states no years.
@@ -445,6 +504,7 @@ export function analyze(target, pool, extraRelated = []) {
     parsed: t,
     criteria: { tokens: t.tokens, level, levelSource, years: target.years || null, tolerance: YEARS_TOLERANCE, skills: jdSkills },
     related: { ref, jobs: related, level: relatedLevel, levelSource: relatedLevelSource },
+    estimate,
     identical: identical.slice(0, 3),
     likely: likely.slice(0, 3),
     company: { ...summarize(co.list), years: co.years, examples: co.list.sort(byRelevance).slice(0, 5) },

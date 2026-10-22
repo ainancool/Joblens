@@ -175,13 +175,43 @@
     return cands.reduce((a, b) => (b.length > a.length ? b : a), "");
   }
 
+  // Pay shown by LinkedIn itself: structured data first, then a short pay line in the top card
+  // (e.g. "$8,000/month - $12,000/month", "SGD 120K/yr - 150K/yr"). Raw text; lib.js parses it.
+  const PAY_RE = /(S\$|SGD|\$)\s?\d[\d,.]*\s?[kK]?.{0,40}?\/\s?(yr|year|mo|month|hr|hour)\b/i;
+  function pageSalary() {
+    for (const sc of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const d = JSON.parse(sc.textContent);
+        const jp = (Array.isArray(d) ? d : d["@graph"] || [d]).find((x) => x && x["@type"] === "JobPosting");
+        const bs = jp?.baseSalary;
+        const v = bs?.value || {};
+        const lo = v.minValue ?? v.value, hi = v.maxValue ?? v.value;
+        if (lo != null) {
+          const unit = String(v.unitText || "MONTH").toLowerCase();
+          return `${bs.currency || "SGD"} ${lo}${hi != null && hi !== lo ? " - " + hi : ""} per ${unit}`;
+        }
+      } catch (_) {}
+    }
+    const scope = document.querySelector("main") || document.body;
+    const heads = [...scope.querySelectorAll("h2, h3")].filter((h) => JD_HEADINGS.test(text(h)));
+    const stopAt = heads[0] || null;
+    for (const e of scope.querySelectorAll("span, li, button, div")) {
+      if (e.closest("#sg-job-lens")) continue;
+      if (stopAt && stopAt.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING) break; // only above the JD
+      if (e.children.length > 3) continue;
+      const t = text(e);
+      if (t.length > 0 && t.length <= 80 && PAY_RE.test(t)) return t;
+    }
+    return "";
+  }
+
   function extract() {
     if (!location.pathname.startsWith("/jobs")) return null;
     const id = jobId();
     if (!id) return null;
     const job = fromDom() || fromJsonLd() || fromDocTitle();
     if (!job?.title || !job?.company) return null;
-    return { id, ...job, description: description() };
+    return { id, ...job, description: description(), pageSalary: pageSalary() };
   }
 
 
@@ -194,7 +224,7 @@
   let lastSig = "";
   setInterval(() => {
     const j = extract();
-    const sig = j ? `${j.id}|${j.title}|${j.company}|${j.location}|${j.description.length}` : "";
+    const sig = j ? `${j.id}|${j.title}|${j.company}|${j.location}|${j.description.length}|${j.pageSalary}` : "";
     if (sig === lastSig) return;
     lastSig = sig;
     chrome.runtime.sendMessage({ type: "jobChanged", job: j }).catch(() => {});

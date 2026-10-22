@@ -96,7 +96,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("vendor/pdf.worker.m
 
   // ----- 薪资 tab -----
   function salaryTab(job,d){
-    const out=[identicalBlock(d)];
+    const out=[estimateBlock(d)];
     const comparison=el('section',{class:'block salary-comparison','aria-label':'公司与市场薪资对比'},el('div',{class:'comparison-heading'},el('b',{},'同类岗位参考'),el('span',{class:'meta'},'SGD / 月 · P25–P75')));
     for(const [key,label] of [['company','本公司'],['market','全市场']]){
       const s=d[key];const line=el('div',{class:'comparison-row'},el('div',{class:'comparison-name'},el('b',{},label),el('span',{class:'meta'},s.n?s.n+' 个公开岗位':'无公开样本')),el('div',{class:'comparison-value'},el('strong',{},s.n?(s.p25===s.p75?fmt(s.p25):fmt(s.p25)+' – '+fmt(s.p75)):'暂无数据',s.n?el('small',{class:'unit'},' /月'):null),el('span',{class:'meta '+(s.n&&s.n<5?'text-warn':'')},s.n===1?'单个岗位中点':s.n>0&&s.n<5?'小样本，谨慎参考':s.years==='relaxed'?'经验条件已放宽':'中位数 '+(s.n?fmt(s.p50):'–'))),el('button',{class:'detail-button',id:'detail-'+key,type:'button','aria-label':label+'样本详情',onclick:()=>showOverlay('stats',{key})},'详情',icon('arrow')));comparison.append(line)
@@ -107,6 +107,56 @@ pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("vendor/pdf.worker.m
   }
 
   const yearsText = (y) => (!y ? null : y.max != null ? `${y.min}–${y.max} 年` : `${y.min}+ 年`);
+
+  // "本职位薪资区间": the best public answer for this posting (see estimateSalary in lib.js).
+  function estimateBlock(d) {
+    const e = d.estimate || { source: "none" };
+    const box = el("section", { class: "block salary-main" });
+    const TAG = {
+      page: ["t-good", "LinkedIn 职位页"], jd: ["t-good", "JD 写明"], "mcf-same": ["t-good", "MCF 同一职位"],
+      "mcf-likely": ["t-warn", "MCF 可能是同一职位"], estimate: ["t-info", "按公开数据估算"],
+    };
+    const tag = TAG[e.source];
+    box.append(el("div", { class: "label" }, "本职位薪资区间", tag ? el("span", { class: "tag " + tag[0] }, tag[1]) : null));
+    const hero = el("div", { class: "hero" });
+    if (e.source === "none") {
+      hero.append(
+        el("div", { class: "mid" }, "公开资料不足，暂时估算不出"),
+        el("div", { class: "meta" }, e.hidden ? "这个职位在 MCF 上隐藏了薪资，同类职位的公开薪资也太少。可以看看「机会」里的相似岗位。"
+          : "MCF 上没有找到这个职位，同类职位的公开薪资也太少。可以看看「机会」里的相似岗位。"));
+      box.append(hero);
+      return box;
+    }
+    hero.append(el("div", { class: "amount" }, range(e.range),
+      el("small", {}, "SGD / 月 · 基本薪资" + (e.source === "estimate" && e.mid ? " · 中位数 " + fmt(e.mid) : ""))));
+    const meta = el("div", { class: "meta" });
+    if (e.source === "page") meta.append("LinkedIn 职位页显示：" + e.text);
+    else if (e.source === "jd") meta.append("JD 原文：“" + e.text + "”");
+    else if (e.source === "mcf-same" || e.source === "mcf-likely") {
+      const j = e.job;
+      meta.append(e.source === "mcf-likely" ? `MCF 职位名：${j.title} · ` : "", j.postedAt ? `发布于 ${date(j.postedAt)} · ` : "", link(j.url, "核对 MCF 原帖 ↗", "source-link"));
+    } else {
+      meta.append(`根据本公司 ${e.companyN} 个、全市场 ${e.marketN} 个同类职位的公开薪资估算` +
+        (e.hidden ? "（这个职位在 MCF 上隐藏了薪资）" : (d.identical.length || d.likely.length) ? "" : "（MCF 上没有找到这个职位）"));
+    }
+    hero.append(meta);
+    box.append(hero);
+    if (e.source === "estimate" && e.confidence === "low") box.append(el("p", { class: "sample-warning" }, "样本较少，仅供粗略参考。"));
+    // MCF same-posting salary as a cross-check when the headline came from LinkedIn / the JD
+    const same = (d.identical[0] || d.likely[0]);
+    if ((e.source === "page" || e.source === "jd") && same?.salary) {
+      box.append(el("p", { class: "meta", style: "margin-top:8px" }, "MCF 同一职位：" + range(same.salary) + " · ", link(same.url, "核对 ↗", "source-link")));
+    }
+    const list = d.identical.length ? d.identical : d.likely;
+    const others = (e.source === "mcf-same" || e.source === "mcf-likely") ? list.filter((j) => j !== e.job) : [];
+    if (others.length) {
+      const ul = el("ul");
+      for (const j of others) ul.append(el("li", {}, link(j.url, j.salary ? range(j.salary) : "薪资未公开", "num"),
+        el("span", { class: "meta" }, ` · ${j.title}${j.postedAt ? " · " + date(j.postedAt) : ""}`)));
+      box.append(el("details", {}, el("summary", {}, `MCF 上还有 ${others.length} 条相同职位`), ul));
+    }
+    return box;
+  }
 
   function identicalBlock(d) {
     const box = el("section", { class: "block salary-main" });
@@ -162,7 +212,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("vendor/pdf.worker.m
     const tones={high:'t-good',medium:'t-warn',low:'t-warn'};const texts={high:'样本较充足',medium:'可参考',low:'小样本 · 谨慎参考'};
     box.append(el('div',{class:'row2'},el('div',{class:'mid'},s.p25===s.p75?fmt(s.p25):fmt(s.p25)+' – '+fmt(s.p75)),el('span',{class:'tag '+(tones[s.confidence]||'t-mute')},texts[s.confidence]||'样本有限')),el('div',{class:'meta'},s.n===1?'单个职位的薪资中点，不是市场分布':'中间 50% 岗位 · P25–P75 · SGD / 月'),el('div',{class:'salary-facts'},el('div',{},el('b',{},fmt(s.p50)),el('span',{},'薪资中位数')),el('div',{},el('b',{},s.n),el('span',{},'个公开薪资岗位'))));
     if(s.n<5)box.append(el('p',{class:'sample-warning'},'少于 5 个样本，区间可能受个别岗位影响。'));
-    if(c?.years&&s.years==='applied')box.append(el('p',{class:'meta',style:'margin-top:10px'},'经验筛选：'+Math.max(0,c.years.min-c.tolerance)+'–'+(c.years.min+c.tolerance)+' 年。'));
+
     if(c?.years&&s.years==='relaxed')box.append(el('p',{class:'sample-warning'},'经验筛选后样本不足，已放宽为不限年限。'));
     const list=el('ul');for(const j of s.examples||[])list.append(el('li',{},link(j.url,j.title),el('div',{class:'meta'},j.company+' · '+range(j.salary))));
     box.append(el('details',{},el('summary',{},'查看样本与统计说明'),el('p',{class:'meta'},'每个职位先取薪资区间中点，再计算分位数。公开最低 '+fmt(s.lowest)+'；最高 '+fmt(s.highest)+'。'+(s.n===1?'单个职位原区间 '+fmt(s.lowest)+' – '+fmt(s.highest)+'。':'')),list));return box;
@@ -248,7 +298,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("vendor/pdf.worker.m
     if (r.ref) {
       head.append(
         el("div", { class: "mid" }, range(r.ref), el("small", { class: "meta" }, " / 月")),
-        el("div", { class: "meta" }, r.ref.source === "same" ? "来自 MCF 上的同一职位" : "来自全市场同类职位的 P25–P75")
+        el("div", { class: "meta" }, ({page:"来自 LinkedIn 职位页",jd:"来自 JD",["mcf-same"]:"来自 MCF 上的同一职位",["mcf-likely"]:"来自 MCF 上可能是同一职位的招聘",estimate:"按公开数据估算"})[r.ref.source] || "本职位薪资区间")
       );
     } else {
       head.append(el("div", { class: "empty" }, "没有可比较的薪资，下面只列出相似职位和资料"));

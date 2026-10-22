@@ -108,7 +108,9 @@ assert.deepEqual(findSkills("Strong in Go and AWS; SAST/DAST, threat modelling. 
   ["aws", "c++", "dast", "go", "sast", "threat modeling"].sort());
 assert.ok(!findSkills("Let's go to the meeting").includes("python"));
 assert.ok(!findSkills("wazuh").includes("wiz"));
-assert.equal(compareSalary({ min: 8000, max: 12000 }, { min: 10000, max: 14000 }), "similar");
+assert.equal(compareSalary({ min: 9000, max: 13000 }, { min: 10000, max: 14000 }), "similar"); // mid 11000 vs 12000: -8%
+assert.equal(compareSalary({ min: 8000, max: 12000 }, { min: 10000, max: 14000 }), "lower");   // -17%
+assert.equal(compareSalary({ min: 9800, max: 20000 }, { min: 6500, max: 10000 }), "higher");  // barely overlapping, clearly higher
 assert.equal(compareSalary({ min: 15000, max: 18000 }, { min: 10000, max: 14000 }), "higher");
 assert.equal(compareSalary({ min: 4000, max: 6000 }, { min: 10000, max: 14000 }), "lower");
 assert.equal(compareSalary(null, { min: 1, max: 2 }), null);
@@ -131,7 +133,7 @@ const poolR = [
 ].map(mapMcfJob);
 const rr = analyze({ title: "Senior AppSec Engineer", company: "ByteDance", years: { min: 5 }, description: jd }, poolR);
 const ids = rr.related.jobs.map((j) => j.id);
-assert.equal(rr.related.ref.source, "same");
+assert.equal(rr.related.ref.source, "mcf-same");
 assert.ok(!ids.includes("same"), "the identical posting is not 'related'");
 assert.ok(!ids.includes("d"), "different role excluded");
 assert.ok(!ids.includes("e"), "manager level excluded for senior IC");
@@ -244,3 +246,51 @@ assert.ok(!rR.market.examples.some((j) => j.id === "na"));
 const rP = analyze({ title: "Security Engineer", company: "X", years: { min: 3, max: null } }, poolRange);
 assert.equal(rP.market.n, 7 - 1, "3+ years -> 1–5 window: 1,1,2,3,4,5");
 console.log("year-range tests passed");
+
+// ---------- this job's salary from public information ----------
+import { estimateSalary, findJdSalary } from "../lib.js";
+const base = { identical: [], likely: [], companyList: [], marketList: [] };
+assert.equal(estimateSalary({ ...base, pageSalaryText: "$8,000/month - $12,000/month" }).source, "page");
+assert.deepEqual(estimateSalary({ ...base, pageSalaryText: "SGD 120K/yr - 150K/yr" }).range, { min: 10000, max: 12500 });
+assert.equal(estimateSalary({ ...base, description: "Salary: S$8,000 - S$10,000 per month" }).source, "jd");
+assert.equal(findJdSalary("Competitive salary package."), null);
+const m = (id, lo, hi) => ({ id, salary: { min: lo, max: hi } });
+assert.equal(estimateSalary({ ...base, identical: [m("s", 9000, 15000)] }).source, "mcf-same");
+assert.equal(estimateSalary({ ...base, likely: [m("l", 9000, 14000)] }).source, "mcf-likely");
+// hidden MCF salary -> falls through to estimate, flagged
+const est = estimateSalary({ ...base, identical: [{ id: "h", salary: null }],
+  companyList: [m("c1", 9000, 13000), m("c2", 10000, 14000)],
+  marketList: [m("c1", 9000, 13000), m("m1", 6000, 9000), m("m2", 7000, 10000), m("m3", 8000, 12000), m("m4", 12000, 16000)] });
+assert.equal(est.source, "estimate");
+assert.equal(est.hidden, true);
+assert.equal(est.companyN, 2); assert.equal(est.marketN, 5);
+assert.ok(est.range.min >= 7000 && est.range.max <= 14000 && est.range.min < est.range.max, JSON.stringify(est.range));
+assert.ok(est.mid >= 10000, "company postings weigh more, pulling the middle up: " + est.mid);
+assert.equal(est.range.min % 100, 0);
+assert.equal(estimateSalary({ ...base, marketList: [m("a", 1, 2), m("b", 3, 4)] }).source, "none");
+// end-to-end: analyze() exposes the estimate
+const re = analyze({ title: "Security Engineer", company: "X", years: { min: 3, max: 5 }, description: "x", pageSalary: "" }, poolRange);
+assert.equal(re.estimate.source, "estimate");
+assert.ok(re.estimate.range.min > 0);
+const rp = analyze({ title: "Security Engineer", company: "X", pageSalary: "SGD 9,000 - 12,000 per month" }, poolRange);
+assert.equal(rp.estimate.source, "page");
+console.log("salary-estimate tests passed:", JSON.stringify(est.range), est.mid, "| e2e", JSON.stringify(re.estimate.range));
+
+// ---------- long titles: salary stats compare the role part only ----------
+const poolLong = [
+  rawS("s1", "Senior Security Engineer", "NXP", [8500, 12000], 5, ""),
+  rawS("s2", "Senior Security Engineer, Product", "GOVTECH", [9000, 13000], 5, ""),
+  rawS("s3", "Lead Security Engineer", "GRAB", [11000, 15000], 6, ""),
+  rawS("acct", "Senior Accountant", "OKX", [9000, 12000], 5, ""),
+].map(mapMcfJob);
+const rLong = analyze({ title: "Staff / Senior Security Engineer, Firmware Test, SSD", company: "Acme", years: { min: 3, max: 6 } }, poolLong);
+assert.equal(rLong.market.n, 3, "team/product words after the comma no longer block matches");
+assert.equal(rLong.estimate.source, "estimate");
+console.log("long-title stats test passed:", JSON.stringify(rLong.estimate.range));
+// weighted percentile sanity: three market postings, median is the middle one
+const e3 = estimateSalary({ identical: [], likely: [], companyList: [], marketList: [m("a", 8500, 12000), m("b", 9000, 13000), m("c", 14000, 18000)] });
+assert.equal(e3.mid, 11000);
+// a same-company posting counts twice
+const e4 = estimateSalary({ identical: [], likely: [], companyList: [m("c", 14000, 18000)], marketList: [m("a", 8500, 12000), m("b", 9000, 13000), m("c", 14000, 18000)] });
+assert.ok(e4.mid > e3.mid, `${e4.mid} > ${e3.mid}`);
+console.log("weighted percentile tests passed:", e3.mid, e4.mid, JSON.stringify(e3.range));

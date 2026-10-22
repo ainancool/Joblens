@@ -81,7 +81,7 @@ async function lookup(input) {
   const queries = relatedQueries(job.title, findSkills(description));
   const jooble = await joobleConfig();
   const useJooble = !!(jooble && jooble.granted);
-  const key = `lookup:v5:${job.id}|${job.company.toLowerCase()}|${job.title.toLowerCase()}|${description ? 1 : 0}|j${useJooble ? 1 : 0}`;
+  const key = `lookup:v6:${job.id}|${job.company.toLowerCase()}|${job.title.toLowerCase()}|${description ? 1 : 0}|j${useJooble ? 1 : 0}|p${job.pageSalary || ""}`;
   return cached(key, async () => {
     const extraQs = queries.filter((x) => x !== term);
     const [exact, byRole, byCompany, ...wider] = await limited([
